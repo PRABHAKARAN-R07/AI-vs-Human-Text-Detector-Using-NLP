@@ -1,39 +1,48 @@
 import re
 from pathlib import Path
 
+import streamlit as st
 import joblib
 import nltk
-from flask import Flask, render_template, request, jsonify
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
 
-# -------------------------------
-# 1. Project configuration
-# -------------------------------
+# -----------------------------
+# 1. Page configuration
+# -----------------------------
 
-BASE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = BASE_DIR / "model.joblib"
+st.set_page_config(
+    page_title="AI vs Human Text Detector",
+    page_icon="🤖",
+    layout="centered"
+)
 
-app = Flask(__name__)
+st.title("🤖 AI vs Human Text Detector")
+st.write("Analyze text using NLP and Machine Learning.")
 
 
-# -------------------------------
+# -----------------------------
 # 2. Text preprocessing
-# Must match train_model.py
-# -------------------------------
+# -----------------------------
 
-nltk.download("stopwords", quiet=True)
-nltk.download("wordnet", quiet=True)
-nltk.download("omw-1.4", quiet=True)
+@st.cache_resource
+def initialize_nltk():
+    nltk.download("stopwords", quiet=True)
+    nltk.download("wordnet", quiet=True)
+    nltk.download("omw-1.4", quiet=True)
 
-stop_words = set(stopwords.words("english"))
-lemmatizer = WordNetLemmatizer()
+    return (
+        set(stopwords.words("english")),
+        WordNetLemmatizer()
+    )
+
+
+stop_words, lemmatizer = initialize_nltk()
 
 
 def clean_text(text):
     text = re.sub(r"[^a-z\s]", " ", str(text).lower())
-
     words = text.split()
 
     words = [
@@ -45,77 +54,95 @@ def clean_text(text):
     return " ".join(words)
 
 
-# -------------------------------
+# -----------------------------
 # 3. Load trained model
-# -------------------------------
+# -----------------------------
 
-if not MODEL_PATH.exists():
-    raise FileNotFoundError(
-        "model.joblib not found. Train your model first."
-    )
+@st.cache_resource
+def load_model():
+    model_path = Path(__file__).resolve().parent / "model.joblib"
 
-model = joblib.load(MODEL_PATH)
+    if not model_path.exists():
+        raise FileNotFoundError(
+            "model.joblib is missing from the GitHub repository."
+        )
 
-
-# -------------------------------
-# 4. Home page
-# -------------------------------
-
-@app.route("/")
-def home():
-    return render_template("index.html")
+    return joblib.load(model_path)
 
 
-# -------------------------------
-# 5. Prediction API
-# -------------------------------
-
-@app.route("/predict", methods=["POST"])
-def predict():
-    try:
-        data = request.get_json(silent=True) or {}
-        text = data.get("text", "")
-
-        if not isinstance(text, str) or not text.strip():
-            return jsonify({
-                "error": "Please enter a paragraph."
-            }), 400
-
-        # Predict using the trained model
-        prediction = str(model.predict([text])[0]).lower()
-
-        # Calculate predicted-class probability
-        probabilities = model.predict_proba([text])[0]
-        classes = [str(label).lower() for label in model.classes_]
-
-        confidence = float(
-            probabilities[classes.index(prediction)]
-        ) * 100
-
-        # Return result to JavaScript
-        return jsonify({
-            "prediction": prediction,
-            "confidence": round(confidence, 2),
-            "word_count": len(text.split()),
-            "character_count": len(text)
-        })
-
-    except Exception:
-        app.logger.exception("Prediction error")
-
-        return jsonify({
-            "error": "Prediction failed. Check the Flask terminal."
-        }), 500
+try:
+    model = load_model()
+except Exception as error:
+    st.error(f"Could not load the model: {error}")
+    st.stop()
 
 
-# -------------------------------
-# 6. Run Flask application
-# -------------------------------
+# -----------------------------
+# 4. Text input
+# -----------------------------
 
-if __name__ == "__main__":
-    app.run(
-        host="127.0.0.1",
-        port=5000,
-        debug=False
-    )
+text = st.text_area(
+    "Enter your paragraph",
+    height=220,
+    placeholder="Paste your text here..."
+)
+
+word_count = len(text.split()) if text.strip() else 0
+char_count = len(text)
+
+col1, col2 = st.columns(2)
+
+col1.metric("Word Count", word_count)
+col2.metric("Character Count", char_count)
+
+
+# -----------------------------
+# 5. Predict
+# -----------------------------
+
+if st.button("🔍 Detect Text", use_container_width=True):
+
+    if not text.strip():
+        st.warning("Please enter a paragraph first.")
+
+    else:
+        try:
+            prediction = str(model.predict([text])[0]).lower()
+
+            probabilities = model.predict_proba([text])[0]
+            classes = [str(label).lower() for label in model.classes_]
+
+            confidence = float(
+                probabilities[classes.index(prediction)]
+            ) * 100
+
+            st.subheader("Prediction Result")
+
+            if prediction == "ai":
+                st.error("🤖 AI-generated")
+            elif prediction == "human":
+                st.success("👤 Human-written")
+            else:
+                st.warning(f"Prediction: {prediction}")
+
+            st.metric("Model Score", f"{confidence:.2f}%")
+
+            st.caption(
+                "The model score is an estimated probability, "
+                "not proof of authorship."
+            )
+
+        except Exception as error:
+            st.error(f"Prediction failed: {error}")
+
+
+# -----------------------------
+# 6. Prediction history
+# -----------------------------
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+if st.button("Clear Text"):
+    st.rerun()
 
